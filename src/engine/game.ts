@@ -1,6 +1,29 @@
-import { Player, Enemy, Keys, GameMap } from "./types";
-import { GAME_MAP, isWall } from "./map";
-import { render } from "./renderer";
+import { Player, Enemy, Keys, GameMap, AmmoPickup, Princess } from "./types";
+import { buildFloorMap, isWall, isInMansion, AMMO_SPAWNS, PRINCESS_LOCATION, STAIRS } from "./map";
+import { render, loadFaceImage } from "./renderer";
+
+const SUPABASE_BASE = "https://kxqbkbdmwtihdhcwhuxq.supabase.co/storage/v1/object/public/nehal-doom/sounds";
+
+// Audio cache - preloads and reuses audio elements so sounds aren't re-fetched
+const audioCache = new Map<string, HTMLAudioElement>();
+
+function getCachedAudio(url: string): HTMLAudioElement {
+  let audio = audioCache.get(url);
+  if (!audio) {
+    audio = new Audio(url);
+    audio.preload = "auto";
+    audioCache.set(url, audio);
+  }
+  return audio;
+}
+
+function playCachedSound(url: string, volume: number) {
+  const cached = getCachedAudio(url);
+  // Clone so overlapping plays work (e.g. rapid shooting)
+  const clone = cached.cloneNode(true) as HTMLAudioElement;
+  clone.volume = volume;
+  clone.play().catch(() => {});
+}
 
 const PLAYER_SPEED = 0.06;
 const PLAYER_TURN_SPEED = 0.04;
@@ -9,6 +32,10 @@ const SHOOT_COOLDOWN = 8;
 const SHOOT_RANGE = 16;
 const SHOOT_DAMAGE = 35;
 const ENEMY_ATTACK_RANGE = 1.5;
+const PICKUP_RANGE = 1.0;
+const PRINCESS_RESCUE_RANGE = 1.5;
+const AMMO_RESPAWN_TIME = 600; // ~10 seconds at 60fps
+const STAIR_COOLDOWN = 60; // ~1 second at 60fps
 
 export class Game {
   player: Player;
@@ -24,32 +51,64 @@ export class Game {
   gameOver: boolean;
   gameWon: boolean;
   lastTime: number;
+  ammoPickups: AmmoPickup[];
+  princess: Princess;
+  bowserDead: boolean;
+  stairCooldown: number;
+
+  // Music
+  bgMusic: HTMLAudioElement | null;
+  mansionMusic: HTMLAudioElement | null;
+  selectedBgTrack: string;
+  mansionTrackPath: string;
+  inMansion: boolean;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
-    this.map = GAME_MAP;
     this.soundFiles = [];
     this.running = false;
+    loadFaceImage();
     this.mouseSensitivity = 0.003;
     this.killCount = 0;
     this.gameOver = false;
     this.gameWon = false;
     this.lastTime = 0;
+    this.bowserDead = false;
+    this.stairCooldown = 0;
 
-    this.player = {
-      x: this.map.spawnX,
-      y: this.map.spawnY,
-      angle: this.map.spawnAngle,
+    // Music
+    this.bgMusic = null;
+    this.mansionMusic = null;
+    this.selectedBgTrack = "";
+    this.mansionTrackPath = `${SUPABASE_BASE}/mansion.m4a`;
+    this.inMansion = false;
+
+    this.player = this.createPlayer();
+    this.keys = this.createKeys();
+    this.map = buildFloorMap(this.player.floor);
+    this.enemies = this.spawnEnemies();
+    this.ammoPickups = this.spawnAmmoPickups();
+    this.princess = { x: PRINCESS_LOCATION.x, y: PRINCESS_LOCATION.y, rescued: false, floor: PRINCESS_LOCATION.floor };
+  }
+
+  createPlayer(): Player {
+    return {
+      x: 3.5,
+      y: 3.5,
+      angle: 0,
       health: 100,
       ammo: 50,
       shooting: false,
       shootCooldown: 0,
       bobPhase: 0,
       velocity: { x: 0, y: 0 },
+      floor: 1,
     };
+  }
 
-    this.keys = {
+  createKeys(): Keys {
+    return {
       forward: false,
       backward: false,
       left: false,
@@ -58,50 +117,146 @@ export class Game {
       strafeRight: false,
       shoot: false,
     };
+  }
 
-    this.enemies = this.spawnEnemies();
+  spawnAmmoPickups(): AmmoPickup[] {
+    return AMMO_SPAWNS.map((s, i) => ({
+      x: s.x,
+      y: s.y,
+      amount: 10 + Math.floor(Math.random() * 15),
+      active: true,
+      respawnTimer: 0,
+      bobPhase: i * 0.7,
+      floor: s.floor,
+    }));
   }
 
   spawnEnemies(): Enemy[] {
-    const spawns: { x: number; y: number; type: "imp" | "demon" | "baron" }[] = [
-      // Room 1 area
-      { x: 5, y: 5, type: "imp" },
-      { x: 7, y: 3, type: "imp" },
-      // Central area
-      { x: 12, y: 6, type: "demon" },
-      { x: 14, y: 4, type: "imp" },
-      // Middle room
-      { x: 10, y: 10, type: "demon" },
-      { x: 11, y: 11, type: "imp" },
-      // Right area
-      { x: 17, y: 5, type: "imp" },
-      { x: 20, y: 3, type: "demon" },
-      // Bottom section
-      { x: 5, y: 15, type: "baron" },
-      { x: 10, y: 18, type: "demon" },
-      { x: 16, y: 16, type: "imp" },
-      { x: 20, y: 15, type: "baron" },
-      // More scattered
-      { x: 3, y: 20, type: "imp" },
-      { x: 20, y: 20, type: "demon" },
-      { x: 12, y: 14, type: "imp" },
+    const spawns: { x: number; y: number; type: "imp" | "demon" | "baron" | "boss" | "bowser"; floor: number }[] = [
+      // Outdoor area (floor 1)
+      { x: 5, y: 5, type: "imp", floor: 1 },
+      { x: 7, y: 3, type: "imp", floor: 1 },
+      { x: 12, y: 6, type: "demon", floor: 1 },
+      { x: 14, y: 4, type: "imp", floor: 1 },
+      { x: 10, y: 10, type: "demon", floor: 1 },
+      { x: 11, y: 11, type: "imp", floor: 1 },
+      { x: 17, y: 5, type: "imp", floor: 1 },
+      { x: 20, y: 3, type: "demon", floor: 1 },
+      { x: 5, y: 15, type: "baron", floor: 1 },
+      { x: 10, y: 18, type: "demon", floor: 1 },
+      { x: 16, y: 16, type: "imp", floor: 1 },
+      { x: 20, y: 15, type: "baron", floor: 1 },
+      { x: 3, y: 20, type: "imp", floor: 1 },
+      { x: 20, y: 20, type: "demon", floor: 1 },
+      { x: 12, y: 14, type: "imp", floor: 1 },
+      { x: 8, y: 25, type: "imp", floor: 1 },
+      { x: 15, y: 30, type: "demon", floor: 1 },
+      { x: 5, y: 35, type: "imp", floor: 1 },
+      { x: 18, y: 35, type: "baron", floor: 1 },
+      { x: 10, y: 28, type: "imp", floor: 1 },
+      // Outdoor boss (floor 1)
+      { x: 16, y: 21, type: "boss", floor: 1 },
+      // Mansion ground floor (floor 1)
+      { x: 26, y: 14, type: "demon", floor: 1 },
+      { x: 36, y: 14, type: "demon", floor: 1 },
+      { x: 30, y: 18, type: "baron", floor: 1 },
+      { x: 34, y: 20, type: "imp", floor: 1 },
+      { x: 26, y: 22, type: "imp", floor: 1 },
+      { x: 35, y: 25, type: "demon", floor: 1 },
+      { x: 28, y: 30, type: "baron", floor: 1 },
+      // Mansion floor 2
+      { x: 30, y: 14, type: "demon", floor: 2 },
+      { x: 34, y: 20, type: "baron", floor: 2 },
+      { x: 26, y: 25, type: "imp", floor: 2 },
+      { x: 33, y: 30, type: "demon", floor: 2 },
+      { x: 28, y: 35, type: "baron", floor: 2 },
+      { x: 35, y: 33, type: "imp", floor: 2 },
+      // Mansion floor 3 (Bowser's lair)
+      { x: 30, y: 15, type: "demon", floor: 3 },
+      { x: 34, y: 20, type: "baron", floor: 3 },
+      { x: 26, y: 25, type: "demon", floor: 3 },
+      // BOWSER EPSTEIN - guarding the princess on floor 3
+      { x: 31, y: 31, type: "bowser", floor: 3 },
     ];
+
+    const hpMap = { imp: 40, demon: 80, baron: 150, boss: 500, bowser: 800 };
+    const speedMap = { imp: 0.025, demon: 0.03, baron: 0.02, boss: 0.015, bowser: 0.018 };
+    const dmgMap = { imp: 8, demon: 15, baron: 20, boss: 35, bowser: 40 };
+    const cdMap = { imp: 40, demon: 40, baron: 60, boss: 50, bowser: 45 };
 
     return spawns.map((s) => ({
       x: s.x + 0.5,
       y: s.y + 0.5,
-      health: s.type === "baron" ? 150 : s.type === "demon" ? 80 : 40,
-      maxHealth: s.type === "baron" ? 150 : s.type === "demon" ? 80 : 40,
+      health: hpMap[s.type],
+      maxHealth: hpMap[s.type],
       alive: true,
       type: s.type,
-      speed: s.type === "demon" ? 0.03 : s.type === "baron" ? 0.02 : 0.025,
-      damage: s.type === "baron" ? 20 : s.type === "demon" ? 15 : 8,
+      speed: speedMap[s.type],
+      damage: dmgMap[s.type],
       lastAttack: 0,
-      attackCooldown: s.type === "baron" ? 60 : 40,
+      attackCooldown: cdMap[s.type],
       hitFlash: 0,
       deathTimer: 0,
       sprite: s.type,
+      floor: s.floor,
     }));
+  }
+
+  // Music control
+  setBackgroundTrack(trackPath: string) {
+    this.selectedBgTrack = trackPath;
+  }
+
+  startBackgroundMusic() {
+    if (!this.selectedBgTrack) return;
+    this.bgMusic = getCachedAudio(this.selectedBgTrack);
+    this.bgMusic.loop = true;
+    this.bgMusic.volume = 0.4;
+    this.bgMusic.currentTime = 0;
+    this.bgMusic.play().catch(() => {});
+  }
+
+  stopBackgroundMusic() {
+    if (this.bgMusic) {
+      this.bgMusic.pause();
+      this.bgMusic.currentTime = 0;
+    }
+  }
+
+  startMansionMusic() {
+    this.mansionMusic = getCachedAudio(this.mansionTrackPath);
+    this.mansionMusic.loop = true;
+    this.mansionMusic.volume = 0.5;
+    this.mansionMusic.currentTime = 0;
+    this.mansionMusic.play().catch(() => {});
+  }
+
+  stopMansionMusic() {
+    if (this.mansionMusic) {
+      this.mansionMusic.pause();
+      this.mansionMusic.currentTime = 0;
+      this.mansionMusic = null;
+    }
+  }
+
+  stopAllMusic() {
+    this.stopBackgroundMusic();
+    this.stopMansionMusic();
+  }
+
+  updateMusicZone() {
+    const nowInMansion = isInMansion(this.player.x, this.player.y, this.player.floor);
+    if (nowInMansion && !this.inMansion) {
+      // Entered mansion
+      this.inMansion = true;
+      if (this.bgMusic) this.bgMusic.pause();
+      this.startMansionMusic();
+    } else if (!nowInMansion && this.inMansion) {
+      // Left mansion
+      this.inMansion = false;
+      this.stopMansionMusic();
+      if (this.bgMusic) this.bgMusic.play().catch(() => {});
+    }
   }
 
   async loadSounds() {
@@ -109,6 +264,13 @@ export class Game {
       const res = await fetch("/api/sounds");
       const data = await res.json();
       this.soundFiles = data.sounds;
+      // Preload all sounds into cache
+      for (const url of this.soundFiles) {
+        getCachedAudio(url);
+      }
+      // Also preload music tracks
+      getCachedAudio(this.mansionTrackPath);
+      if (this.selectedBgTrack) getCachedAudio(this.selectedBgTrack);
     } catch {
       this.soundFiles = [];
     }
@@ -116,15 +278,12 @@ export class Game {
 
   playHitSound() {
     if (this.soundFiles.length === 0) {
-      // Generate a funny synth sound as fallback
       this.playFallbackSound();
       return;
     }
     const randomSound =
       this.soundFiles[Math.floor(Math.random() * this.soundFiles.length)];
-    const audio = new Audio(randomSound);
-    audio.volume = 0.6;
-    audio.play().catch(() => {});
+    playCachedSound(randomSound, 0.6);
   }
 
   playFallbackSound() {
@@ -133,7 +292,6 @@ export class Game {
 
     switch (type) {
       case 0: {
-        // Slide whistle down
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.connect(gain);
@@ -147,7 +305,6 @@ export class Game {
         break;
       }
       case 1: {
-        // Boing
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.connect(gain);
@@ -162,7 +319,6 @@ export class Game {
         break;
       }
       case 2: {
-        // Fart-ish
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.type = "sawtooth";
@@ -177,7 +333,6 @@ export class Game {
         break;
       }
       case 3: {
-        // High bonk
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.type = "square";
@@ -192,7 +347,6 @@ export class Game {
         break;
       }
       case 4: {
-        // Wah wah
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.connect(gain);
@@ -212,70 +366,62 @@ export class Game {
   }
 
   playShootSound() {
+    playCachedSound(`${SUPABASE_BASE}/discord-notification.m4a`, 0.7);
+  }
+
+  playDeathSound() {
+    playCachedSound(`${SUPABASE_BASE}/bone-crack.m4a`, 0.8);
+  }
+
+  playPickupSound() {
     const audioCtx = new AudioContext();
-    // Gunshot
-    const bufferSize = audioCtx.sampleRate * 0.15;
-    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 3);
-    }
-    const source = audioCtx.createBufferSource();
-    source.buffer = buffer;
+    const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
-    gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
-    source.connect(gain);
+    osc.connect(gain);
     gain.connect(audioCtx.destination);
-    source.start();
+    osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.15);
+  }
+
+  playRescueSound() {
+    const audioCtx = new AudioContext();
+    const notes = [523, 659, 784, 1047];
+    notes.forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.setValueAtTime(freq, audioCtx.currentTime + i * 0.15);
+      gain.gain.setValueAtTime(0.3, audioCtx.currentTime + i * 0.15);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + i * 0.15 + 0.3);
+      osc.start(audioCtx.currentTime + i * 0.15);
+      osc.stop(audioCtx.currentTime + i * 0.15 + 0.3);
+    });
   }
 
   handleKeyDown(e: KeyboardEvent) {
     switch (e.code) {
-      case "KeyW":
-      case "ArrowUp":
-        this.keys.forward = true;
-        break;
-      case "KeyS":
-      case "ArrowDown":
-        this.keys.backward = true;
-        break;
-      case "KeyA":
-        this.keys.strafeLeft = true;
-        break;
-      case "KeyD":
-        this.keys.strafeRight = true;
-        break;
-      case "ArrowLeft":
-        this.keys.left = true;
-        break;
-      case "ArrowRight":
-        this.keys.right = true;
-        break;
+      case "KeyW": case "ArrowUp": this.keys.forward = true; break;
+      case "KeyS": case "ArrowDown": this.keys.backward = true; break;
+      case "KeyA": this.keys.strafeLeft = true; break;
+      case "KeyD": this.keys.strafeRight = true; break;
+      case "ArrowLeft": this.keys.left = true; break;
+      case "ArrowRight": this.keys.right = true; break;
     }
   }
 
   handleKeyUp(e: KeyboardEvent) {
     switch (e.code) {
-      case "KeyW":
-      case "ArrowUp":
-        this.keys.forward = false;
-        break;
-      case "KeyS":
-      case "ArrowDown":
-        this.keys.backward = false;
-        break;
-      case "KeyA":
-        this.keys.strafeLeft = false;
-        break;
-      case "KeyD":
-        this.keys.strafeRight = false;
-        break;
-      case "ArrowLeft":
-        this.keys.left = false;
-        break;
-      case "ArrowRight":
-        this.keys.right = false;
-        break;
+      case "KeyW": case "ArrowUp": this.keys.forward = false; break;
+      case "KeyS": case "ArrowDown": this.keys.backward = false; break;
+      case "KeyA": this.keys.strafeLeft = false; break;
+      case "KeyD": this.keys.strafeRight = false; break;
+      case "ArrowLeft": this.keys.left = false; break;
+      case "ArrowRight": this.keys.right = false; break;
     }
   }
 
@@ -304,7 +450,6 @@ export class Game {
     this.player.shootCooldown = SHOOT_COOLDOWN;
     this.playShootSound();
 
-    // Check if we hit any enemy
     const cos = Math.cos(this.player.angle);
     const sin = Math.sin(this.player.angle);
 
@@ -313,6 +458,8 @@ export class Game {
 
     for (const enemy of this.enemies) {
       if (!enemy.alive) continue;
+      // Only hit enemies on the same floor
+      if (enemy.floor !== this.player.floor) continue;
 
       const dx = enemy.x - this.player.x;
       const dy = enemy.y - this.player.y;
@@ -320,16 +467,13 @@ export class Game {
 
       if (dist > SHOOT_RANGE) continue;
 
-      // Project enemy onto ray direction
       const dot = dx * cos + dy * sin;
       if (dot <= 0) continue;
 
-      // Perpendicular distance from ray to enemy
       const perpDist = Math.abs(dx * sin - dy * cos);
-      const hitRadius = 0.5 + 0.1 * (dist / SHOOT_RANGE); // More forgiving at distance
+      const hitRadius = 0.5 + 0.1 * (dist / SHOOT_RANGE);
 
       if (perpDist < hitRadius && dot < closestDist) {
-        // Check if wall is in the way
         let blocked = false;
         const steps = Math.floor(dot * 4);
         for (let i = 1; i < steps; i++) {
@@ -357,13 +501,63 @@ export class Game {
         closestHit.alive = false;
         closestHit.deathTimer = 0;
         this.killCount++;
-        this.player.ammo = Math.min(50, this.player.ammo + 5); // Ammo drop
+        this.playDeathSound();
 
-        // Check win
-        if (this.enemies.every((e) => !e.alive)) {
-          this.gameWon = true;
+        if (closestHit.type === "bowser") {
+          this.bowserDead = true;
         }
       }
+    }
+  }
+
+  checkStairs() {
+    if (this.stairCooldown > 0) return;
+
+    const px = Math.floor(this.player.x);
+    const py = Math.floor(this.player.y);
+
+    for (const stair of STAIRS) {
+      if (px === stair.x && py === stair.y && this.player.floor === stair.fromFloor) {
+        this.player.floor = stair.toFloor;
+        this.map = buildFloorMap(this.player.floor);
+        this.stairCooldown = STAIR_COOLDOWN;
+        break;
+      }
+    }
+  }
+
+  checkAmmoPickups() {
+    for (const pickup of this.ammoPickups) {
+      if (!pickup.active) continue;
+      // Only pick up ammo on the same floor
+      if (pickup.floor !== this.player.floor) continue;
+
+      const dx = this.player.x - pickup.x;
+      const dy = this.player.y - pickup.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < PICKUP_RANGE) {
+        pickup.active = false;
+        pickup.respawnTimer = AMMO_RESPAWN_TIME;
+        this.player.ammo = Math.min(99, this.player.ammo + pickup.amount);
+        this.playPickupSound();
+      }
+    }
+  }
+
+  checkPrincessRescue() {
+    if (this.princess.rescued || !this.bowserDead) return;
+    // Only rescue on same floor
+    if (this.princess.floor !== this.player.floor) return;
+
+    const dx = this.player.x - this.princess.x;
+    const dy = this.player.y - this.princess.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < PRINCESS_RESCUE_RANGE) {
+      this.princess.rescued = true;
+      this.gameWon = true;
+      this.playRescueSound();
     }
   }
 
@@ -372,7 +566,10 @@ export class Game {
 
     const p = this.player;
 
-    // Turning with arrow keys
+    // Stair cooldown
+    if (this.stairCooldown > 0) this.stairCooldown--;
+
+    // Turning
     if (this.keys.left) p.angle -= PLAYER_TURN_SPEED;
     if (this.keys.right) p.angle += PLAYER_TURN_SPEED;
 
@@ -382,22 +579,10 @@ export class Game {
     const cos = Math.cos(p.angle);
     const sin = Math.sin(p.angle);
 
-    if (this.keys.forward) {
-      moveX += cos * PLAYER_SPEED;
-      moveY += sin * PLAYER_SPEED;
-    }
-    if (this.keys.backward) {
-      moveX -= cos * PLAYER_SPEED;
-      moveY -= sin * PLAYER_SPEED;
-    }
-    if (this.keys.strafeLeft) {
-      moveX += sin * PLAYER_SPEED;
-      moveY -= cos * PLAYER_SPEED;
-    }
-    if (this.keys.strafeRight) {
-      moveX -= sin * PLAYER_SPEED;
-      moveY += cos * PLAYER_SPEED;
-    }
+    if (this.keys.forward) { moveX += cos * PLAYER_SPEED; moveY += sin * PLAYER_SPEED; }
+    if (this.keys.backward) { moveX -= cos * PLAYER_SPEED; moveY -= sin * PLAYER_SPEED; }
+    if (this.keys.strafeLeft) { moveX += sin * PLAYER_SPEED; moveY -= cos * PLAYER_SPEED; }
+    if (this.keys.strafeRight) { moveX -= sin * PLAYER_SPEED; moveY += cos * PLAYER_SPEED; }
 
     // Wall collision
     const newX = p.x + moveX;
@@ -423,6 +608,30 @@ export class Game {
       this.tryShoot();
     }
 
+    // Check stairs
+    this.checkStairs();
+
+    // Check ammo pickups
+    this.checkAmmoPickups();
+
+    // Check princess rescue
+    this.checkPrincessRescue();
+
+    // Music zones
+    this.updateMusicZone();
+
+    // Respawn ammo pickups
+    for (const pickup of this.ammoPickups) {
+      if (!pickup.active) {
+        pickup.respawnTimer--;
+        if (pickup.respawnTimer <= 0) {
+          pickup.active = true;
+          pickup.amount = 10 + Math.floor(Math.random() * 15);
+        }
+      }
+      pickup.bobPhase += 0.05;
+    }
+
     // Update enemies
     for (const enemy of this.enemies) {
       if (enemy.hitFlash > 0) enemy.hitFlash--;
@@ -432,24 +641,23 @@ export class Game {
         continue;
       }
 
-      // Simple AI: move toward player
+      // Only chase player if on the same floor
+      if (enemy.floor !== this.player.floor) continue;
+
       const dx = p.x - enemy.x;
       const dy = p.y - enemy.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
 
       if (dist < 20) {
-        // Chase player
         const nx = dx / dist;
         const ny = dy / dist;
 
         const newEX = enemy.x + nx * enemy.speed;
         const newEY = enemy.y + ny * enemy.speed;
 
-        // Enemy wall collision
         if (!isWall(this.map, newEX, enemy.y)) enemy.x = newEX;
         if (!isWall(this.map, enemy.x, newEY)) enemy.y = newEY;
 
-        // Attack if close
         if (dist < ENEMY_ATTACK_RANGE) {
           enemy.lastAttack++;
           if (enemy.lastAttack >= enemy.attackCooldown) {
@@ -466,7 +674,24 @@ export class Game {
   }
 
   renderFrame() {
-    render(this.ctx, this.canvas.width, this.canvas.height, this.player, this.enemies, this.map);
+    // Filter entities to only show ones on the current floor
+    const visibleEnemies = this.enemies.filter(e => e.floor === this.player.floor);
+    const visibleAmmo = this.ammoPickups.filter(a => a.floor === this.player.floor);
+    const visiblePrincess = this.princess.floor === this.player.floor
+      ? this.princess
+      : { ...this.princess, rescued: true }; // hide princess on wrong floor
+
+    render(
+      this.ctx,
+      this.canvas.width,
+      this.canvas.height,
+      this.player,
+      visibleEnemies,
+      this.map,
+      visibleAmmo,
+      visiblePrincess,
+      this.bowserDead
+    );
 
     if (this.gameOver) {
       this.ctx.fillStyle = "rgba(255, 0, 0, 0.4)";
@@ -483,36 +708,41 @@ export class Game {
     }
 
     if (this.gameWon) {
-      this.ctx.fillStyle = "rgba(0, 255, 0, 0.2)";
+      this.ctx.fillStyle = "rgba(255, 192, 203, 0.3)";
       this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-      this.ctx.font = "bold 64px monospace";
-      this.ctx.fillStyle = "#00ff00";
+      this.ctx.font = "bold 52px monospace";
+      this.ctx.fillStyle = "#ff69b4";
       this.ctx.textAlign = "center";
-      this.ctx.fillText("YOU WIN!", this.canvas.width / 2, this.canvas.height / 2 - 30);
-      this.ctx.font = "bold 28px monospace";
+      this.ctx.fillText("PRINCESS SAVED!", this.canvas.width / 2, this.canvas.height / 2 - 50);
+      this.ctx.font = "bold 36px monospace";
+      this.ctx.fillStyle = "#00ff00";
+      this.ctx.fillText("YOU WIN!", this.canvas.width / 2, this.canvas.height / 2);
+      this.ctx.font = "bold 24px monospace";
       this.ctx.fillStyle = "#fff";
-      this.ctx.fillText("All enemies defeated!", this.canvas.width / 2, this.canvas.height / 2 + 30);
-      this.ctx.fillText("Click to Play Again", this.canvas.width / 2, this.canvas.height / 2 + 70);
+      this.ctx.fillText(`Kills: ${this.killCount}`, this.canvas.width / 2, this.canvas.height / 2 + 40);
+      this.ctx.fillText("Click to Play Again", this.canvas.width / 2, this.canvas.height / 2 + 80);
       this.ctx.textAlign = "left";
     }
   }
 
   restart() {
-    this.player = {
-      x: this.map.spawnX,
-      y: this.map.spawnY,
-      angle: this.map.spawnAngle,
-      health: 100,
-      ammo: 50,
-      shooting: false,
-      shootCooldown: 0,
-      bobPhase: 0,
-      velocity: { x: 0, y: 0 },
-    };
+    this.player = this.createPlayer();
+    this.keys = this.createKeys();
+    this.map = buildFloorMap(1);
     this.enemies = this.spawnEnemies();
+    this.ammoPickups = this.spawnAmmoPickups();
+    this.princess = { x: PRINCESS_LOCATION.x, y: PRINCESS_LOCATION.y, rescued: false, floor: PRINCESS_LOCATION.floor };
     this.killCount = 0;
     this.gameOver = false;
     this.gameWon = false;
+    this.bowserDead = false;
+    this.stairCooldown = 0;
+    this.inMansion = false;
+    this.stopMansionMusic();
+    if (this.bgMusic) {
+      this.bgMusic.currentTime = 0;
+      this.bgMusic.play().catch(() => {});
+    }
   }
 
   gameLoop = () => {
@@ -524,10 +754,12 @@ export class Game {
 
   start() {
     this.running = true;
+    this.startBackgroundMusic();
     this.gameLoop();
   }
 
   stop() {
     this.running = false;
+    this.stopAllMusic();
   }
 }

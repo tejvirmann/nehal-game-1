@@ -4,9 +4,9 @@ const SUPABASE_BASE = "https://kxqbkbdmwtihdhcwhuxq.supabase.co/storage/v1/objec
 
 export async function GET() {
   return NextResponse.json({
-    sounds: [
-      `${SUPABASE_BASE}/discord-notification.m4a`,
-      `${SUPABASE_BASE}/bone-crack.m4a`,
+    tracks: [
+      { name: "background", path: `${SUPABASE_BASE}/background.m4a` },
+      { name: "mansion", path: `${SUPABASE_BASE}/mansion.m4a` },
     ],
   });
 }

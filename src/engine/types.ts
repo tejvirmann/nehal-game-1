@@ -8,6 +8,7 @@ export interface Player {
   shootCooldown: number;
   bobPhase: number;
   velocity: { x: number; y: number };
+  floor: number;
 }
 
 export interface Enemy {
@@ -24,9 +25,27 @@ export interface Enemy {
   hitFlash: number;
   deathTimer: number;
   sprite: string;
+  floor: number;
 }
 
-export type EnemyType = "imp" | "demon" | "baron";
+export type EnemyType = "imp" | "demon" | "baron" | "boss" | "bowser";
+
+export interface AmmoPickup {
+  x: number;
+  y: number;
+  amount: number;
+  active: boolean;
+  respawnTimer: number;
+  bobPhase: number;
+  floor: number;
+}
+
+export interface Princess {
+  x: number;
+  y: number;
+  rescued: boolean;
+  floor: number;
+}
 
 export interface GameMap {
   walls: number[][];
