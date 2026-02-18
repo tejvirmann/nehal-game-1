@@ -443,6 +443,10 @@ export class Game {
     this.keys.shoot = false;
   }
 
+  handleTouchLook(dx: number) {
+    this.player.angle += dx * this.mouseSensitivity * 1.8;
+  }
+
   tryShoot() {
     if (this.player.shootCooldown > 0 || this.player.ammo <= 0) return;
 
