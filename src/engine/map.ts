@@ -209,28 +209,18 @@ export const AMMO_SPAWNS = [
   // Outdoor area (floor 1)
   { x: 6.5, y: 2.5, floor: 1 },
   { x: 15.5, y: 7.5, floor: 1 },
-  { x: 11.5, y: 5.5, floor: 1 },
   { x: 3.5, y: 12.5, floor: 1 },
   { x: 8.5, y: 18.5, floor: 1 },
-  { x: 18.5, y: 3.5, floor: 1 },
-  { x: 2.5, y: 22.5, floor: 1 },
-  { x: 14.5, y: 15.5, floor: 1 },
   { x: 20.5, y: 10.5, floor: 1 },
-  { x: 7.5, y: 30.5, floor: 1 },
   { x: 12.5, y: 35.5, floor: 1 },
-  { x: 19.5, y: 25.5, floor: 1 },
   // Mansion floor 1
   { x: 26.5, y: 14.5, floor: 1 },
-  { x: 35.5, y: 18.5, floor: 1 },
   { x: 30.5, y: 22.5, floor: 1 },
   // Mansion floor 2
-  { x: 28.5, y: 14.5, floor: 2 },
   { x: 32.5, y: 20.5, floor: 2 },
-  { x: 30.5, y: 28.5, floor: 2 },
   { x: 26.5, y: 35.5, floor: 2 },
   // Mansion floor 3
   { x: 30.5, y: 15.5, floor: 3 },
-  { x: 35.5, y: 25.5, floor: 3 },
 ];
 
 // Princess location (floor 3 — Bowser's lair, behind the throne room)

@@ -25,10 +25,10 @@ function playCachedSound(url: string, volume: number) {
   clone.play().catch(() => {});
 }
 
-const PLAYER_SPEED = 0.06;
-const PLAYER_TURN_SPEED = 0.04;
+const PLAYER_SPEED = 0.114;
+const PLAYER_TURN_SPEED = 0.05;
 const PLAYER_RADIUS = 0.25;
-const SHOOT_COOLDOWN = 8;
+const SHOOT_COOLDOWN = 6;
 const SHOOT_RANGE = 16;
 const SHOOT_DAMAGE = 35;
 const ENEMY_ATTACK_RANGE = 1.5;
@@ -180,7 +180,7 @@ export class Game {
     ];
 
     const hpMap = { imp: 40, demon: 80, baron: 150, boss: 500, bowser: 800 };
-    const speedMap = { imp: 0.025, demon: 0.03, baron: 0.02, boss: 0.015, bowser: 0.018 };
+    const speedMap = { imp: 0.045, demon: 0.054, baron: 0.036, boss: 0.027, bowser: 0.0315 };
     const dmgMap = { imp: 8, demon: 15, baron: 20, boss: 35, bowser: 40 };
     const cdMap = { imp: 40, demon: 40, baron: 60, boss: 50, bowser: 45 };
 
@@ -561,7 +561,7 @@ export class Game {
     }
   }
 
-  update() {
+  update(dt: number = 1) {
     if (this.gameOver || this.gameWon) return;
 
     const p = this.player;
@@ -570,8 +570,8 @@ export class Game {
     if (this.stairCooldown > 0) this.stairCooldown--;
 
     // Turning
-    if (this.keys.left) p.angle -= PLAYER_TURN_SPEED;
-    if (this.keys.right) p.angle += PLAYER_TURN_SPEED;
+    if (this.keys.left) p.angle -= PLAYER_TURN_SPEED * dt;
+    if (this.keys.right) p.angle += PLAYER_TURN_SPEED * dt;
 
     // Movement
     let moveX = 0;
@@ -579,10 +579,10 @@ export class Game {
     const cos = Math.cos(p.angle);
     const sin = Math.sin(p.angle);
 
-    if (this.keys.forward) { moveX += cos * PLAYER_SPEED; moveY += sin * PLAYER_SPEED; }
-    if (this.keys.backward) { moveX -= cos * PLAYER_SPEED; moveY -= sin * PLAYER_SPEED; }
-    if (this.keys.strafeLeft) { moveX += sin * PLAYER_SPEED; moveY -= cos * PLAYER_SPEED; }
-    if (this.keys.strafeRight) { moveX -= sin * PLAYER_SPEED; moveY += cos * PLAYER_SPEED; }
+    if (this.keys.forward) { moveX += cos * PLAYER_SPEED * dt; moveY += sin * PLAYER_SPEED * dt; }
+    if (this.keys.backward) { moveX -= cos * PLAYER_SPEED * dt; moveY -= sin * PLAYER_SPEED * dt; }
+    if (this.keys.strafeLeft) { moveX += sin * PLAYER_SPEED * dt; moveY -= cos * PLAYER_SPEED * dt; }
+    if (this.keys.strafeRight) { moveX -= sin * PLAYER_SPEED * dt; moveY += cos * PLAYER_SPEED * dt; }
 
     // Wall collision
     const newX = p.x + moveX;
@@ -652,8 +652,8 @@ export class Game {
         const nx = dx / dist;
         const ny = dy / dist;
 
-        const newEX = enemy.x + nx * enemy.speed;
-        const newEY = enemy.y + ny * enemy.speed;
+        const newEX = enemy.x + nx * enemy.speed * dt;
+        const newEY = enemy.y + ny * enemy.speed * dt;
 
         if (!isWall(this.map, newEX, enemy.y)) enemy.x = newEX;
         if (!isWall(this.map, enemy.x, newEY)) enemy.y = newEY;
@@ -745,9 +745,11 @@ export class Game {
     }
   }
 
-  gameLoop = () => {
+  gameLoop = (timestamp: number) => {
     if (!this.running) return;
-    this.update();
+    const dt = this.lastTime === 0 ? 1 : Math.min((timestamp - this.lastTime) / (1000 / 60), 3);
+    this.lastTime = timestamp;
+    this.update(dt);
     this.renderFrame();
     requestAnimationFrame(this.gameLoop);
   };
@@ -755,7 +757,7 @@ export class Game {
   start() {
     this.running = true;
     this.startBackgroundMusic();
-    this.gameLoop();
+    requestAnimationFrame(this.gameLoop);
   }
 
   stop() {
