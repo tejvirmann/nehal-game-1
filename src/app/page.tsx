@@ -26,6 +26,7 @@ export default function HomePage() {
   const [musicTracks, setMusicTracks] = useState<MusicTrack[]>([]);
   const [selectedTrack, setSelectedTrack] = useState<string>("");
   const [isMobile, setIsMobile] = useState(false);
+  const [gameEnded, setGameEnded] = useState<"over" | "won" | null>(null);
   const [joystickVisual, setJoystickVisual] = useState<JoystickVisual>({
     active: false, baseX: 0, baseY: 0, thumbX: 0, thumbY: 0,
   });
@@ -61,6 +62,8 @@ export default function HomePage() {
     const game = new Game(canvas);
     gameRef.current = game;
     game.loadSounds();
+    game.onGameOver = () => setGameEnded("over");
+    game.onGameWon = () => setGameEnded("won");
 
     const handleResize = () => {
       canvas.width = window.innerWidth;
@@ -76,6 +79,7 @@ export default function HomePage() {
     const handleMouseDown = () => {
       if (game.gameOver || game.gameWon) {
         game.restart();
+        setGameEnded(null);
         return;
       }
       game.handleMouseDown();
@@ -140,6 +144,7 @@ export default function HomePage() {
         // Tap anywhere to restart when game is over/won
         if (game.gameOver || game.gameWon) {
           game.restart();
+          setGameEnded(null);
           continue;
         }
 
@@ -331,6 +336,42 @@ export default function HomePage() {
           }}
         >
           Left: Move &nbsp;|&nbsp; Right: Look &nbsp;|&nbsp; Tap right / 🔫: Shoot
+        </div>
+      )}
+
+      {/* Game over / win button overlay */}
+      {gameEnded && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: "12%",
+            left: "50%",
+            transform: "translateX(-50%)",
+            display: "flex",
+            gap: 20,
+            zIndex: 200,
+          }}
+        >
+          <button
+            style={{
+              fontFamily: "monospace",
+              fontSize: isMobile ? "18px" : "22px",
+              color: "#fff",
+              background: "#1a1a1a",
+              border: "2px solid #555",
+              padding: "10px 28px",
+              cursor: "pointer",
+              letterSpacing: "2px",
+            }}
+            onClick={() => {
+              const game = gameRef.current;
+              if (game) { game.stop(); game.restart(); }
+              setStarted(false);
+              setGameEnded(null);
+            }}
+          >
+            QUIT
+          </button>
         </div>
       )}
 

@@ -55,6 +55,8 @@ export class Game {
   princess: Princess;
   bowserDead: boolean;
   stairCooldown: number;
+  onGameOver: (() => void) | null = null;
+  onGameWon: (() => void) | null = null;
 
   // Music
   bgMusic: HTMLAudioElement | null;
@@ -447,6 +449,31 @@ export class Game {
     this.player.angle += dx * this.mouseSensitivity * 1.8;
   }
 
+  unlockAudio() {
+    // iOS requires audio to be triggered within a user gesture.
+    // Play all cached HTML audio elements silently to unlock them.
+    for (const audio of audioCache.values()) {
+      audio.volume = 0;
+      audio.play().then(() => {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.volume = 1;
+      }).catch(() => {});
+    }
+    // Also unlock the Web Audio API context (used by fallback/pickup/rescue sounds).
+    type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
+    const AudioContextClass = window.AudioContext ?? (window as WebkitWindow).webkitAudioContext;
+    if (AudioContextClass) {
+      const ctx = new AudioContextClass();
+      const buf = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+      ctx.resume().catch(() => {});
+    }
+  }
+
   tryShoot() {
     if (this.player.shootCooldown > 0 || this.player.ammo <= 0) return;
 
@@ -561,6 +588,7 @@ export class Game {
     if (dist < PRINCESS_RESCUE_RANGE) {
       this.princess.rescued = true;
       this.gameWon = true;
+      this.onGameWon?.();
       this.playRescueSound();
     }
   }
@@ -670,6 +698,7 @@ export class Game {
             if (p.health <= 0) {
               p.health = 0;
               this.gameOver = true;
+              this.onGameOver?.();
             }
           }
         }
@@ -743,7 +772,7 @@ export class Game {
     this.stairCooldown = 0;
     this.inMansion = false;
     this.stopMansionMusic();
-    if (this.bgMusic) {
+    if (this.running && this.bgMusic) {
       this.bgMusic.currentTime = 0;
       this.bgMusic.play().catch(() => {});
     }
@@ -760,6 +789,7 @@ export class Game {
 
   start() {
     this.running = true;
+    this.unlockAudio();
     this.startBackgroundMusic();
     requestAnimationFrame(this.gameLoop);
   }
