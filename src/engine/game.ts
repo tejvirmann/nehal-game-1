@@ -451,6 +451,8 @@ export class Game {
 
   unlockAudio() {
     // iOS requires audio to be triggered within a user gesture.
+    // Ensure mansion track is in cache so it gets unlocked even if loadSounds() hasn't resolved yet.
+    getCachedAudio(this.mansionTrackPath);
     // Play all cached HTML audio elements silently to unlock them.
     for (const audio of audioCache.values()) {
       audio.volume = 0;
