@@ -1,8 +1,12 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "DOOM-Style FPS",
+  title: "Nehal Doom: The Game",
   description: "A first-person shooter with funny sound effects",
+  openGraph: {
+    title: "Nehal Doom: The Game",
+    description: "A first-person shooter with funny sound effects",
+  },
 };
 
 export default function RootLayout({
